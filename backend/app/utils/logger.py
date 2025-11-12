@@ -1,11 +1,16 @@
-from datetime import datetime
+# app/utils/logger.py
 from termcolor import colored
+from datetime import datetime
 
-def log_step(msg):
-    print(colored(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}", "cyan"))
+def _log(msg, color=None, symbol="ℹ️"):
+    now = datetime.now().strftime("%H:%M:%S")
+    text = f"[{now}] {symbol} {msg}"
+    if color:
+        print(colored(text, color))
+    else:
+        print(text)
 
-def log_success(msg):
-    print(colored(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}", "green"))
-
-def log_error(msg):
-    print(colored(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}", "red"))
+def info(msg): _log(msg, "cyan", "ℹ️")
+def success(msg): _log(msg, "green", "✅")
+def warn(msg): _log(msg, "yellow", "⚠️")
+def error(msg): _log(msg, "red", "❌")

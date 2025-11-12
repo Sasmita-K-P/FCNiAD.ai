@@ -1,17 +1,18 @@
-import os
-from pathlib import Path
+# app/utils/file_manager.py
+import os, shutil
 
-def prepare_folders(input_dir, output_dir):
-    input_dir.mkdir(parents=True, exist_ok=True)
-    output_dir.mkdir(parents=True, exist_ok=True)
+def ensure_folders(folders):
+    for folder in folders:
+        os.makedirs(folder, exist_ok=True)
 
-def clear_output_folder(output_dir):
-    for f in output_dir.glob("*"):
-        try:
-            f.unlink()
-        except Exception:
-            pass
-
-def get_latest_input_image(input_dir):
-    images = sorted(input_dir.glob("*.[jp][pn]g"), key=os.path.getmtime)
-    return images[-1] if images else None
+def clean_output(output_dir):
+    """Clears all previous output images and JSONs before new run."""
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+        return
+    for f in os.listdir(output_dir):
+        fp = os.path.join(output_dir, f)
+        if os.path.isfile(fp):
+            os.remove(fp)
+        elif os.path.isdir(fp):
+            shutil.rmtree(fp)

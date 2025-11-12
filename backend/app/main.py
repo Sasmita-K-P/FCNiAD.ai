@@ -1,92 +1,108 @@
-import cv2
-import os
-import json
+# app/main.py
+"""
+ROBUST & FAIR DATA PREPROCESSING BACKEND
+----------------------------------------
+Performs:
+  1. Image quality validation
+  2. Nail ROI detection (single/multi-finger or hand)
+  3. CLAHE + Gray-World calibration
+  4. Fairness & skin-tone normalization (LAB)
+  5. Spectral feature extraction
+Outputs:
+  - Annotated result
+  - Calibrated ROI(s)
+  - Fairness report (JSON)
+  - Extracted features (JSON)
+Author: GPT-5 (COE-Intern Ready Version)
+"""
+
+import os, cv2, json
 from pathlib import Path
-from tqdm import tqdm
-import matplotlib.pyplot as plt
-
-from core.validations import validate_image
-from core.contour_detector import extract_nail_roi
+from utils.logger import info, success, warn, error
+from utils.file_manager import ensure_folders, clean_output
+from core.nail_detector import detect_nail_roi
 from core.calibration import calibrate_image
-from core.feature_extractor import extract_features
-from utils.file_manager import prepare_folders, get_latest_input_image, clear_output_folder
-from utils.logger import log_step, log_success, log_error
+from core.feature_extractor import fuse_nail_features
+from core.tone_fairness import analyze_tone_fairness
 
-# ========== PATH CONFIG ==========
-INPUT_DIR = Path("app/input")
-OUTPUT_DIR = Path("app/output")
+# Folder configuration
+BASE = Path(__file__).resolve().parent
+INPUT_DIR = BASE / "input"
+OUTPUT_DIR = BASE / "output"
+ensure_folders([INPUT_DIR, OUTPUT_DIR])
 
-def visualize_stages(original, roi, calibrated, save_path):
-    """Creates a side-by-side visualization for demo purposes."""
-    fig, axs = plt.subplots(1, 3, figsize=(12, 4))
-    axs[0].imshow(cv2.cvtColor(original, cv2.COLOR_BGR2RGB))
-    axs[0].set_title("Original Image")
-    axs[1].imshow(cv2.cvtColor(roi, cv2.COLOR_BGR2RGB))
-    axs[1].set_title("ROI (Nail Region)")
-    axs[2].imshow(cv2.cvtColor(calibrated, cv2.COLOR_BGR2RGB))
-    axs[2].set_title("Calibrated Image")
-    for ax in axs: ax.axis('off')
-    plt.tight_layout()
-    plt.savefig(save_path)
-    plt.close()
+def save_json(data, filename):
+    """Helper: save any Python dict as a formatted JSON file"""
+    with open(OUTPUT_DIR / filename, "w") as f:
+        json.dump(data, f, indent=4)
 
 def main():
-    log_step("🚀 Starting Preprocessing & Feature Extraction Pipeline...")
+    info("🚀 Starting Robust & Fair Preprocessing Pipeline...")
 
-    prepare_folders(INPUT_DIR, OUTPUT_DIR)
-    clear_output_folder(OUTPUT_DIR)
+    # --- Step 1: Input Validation ---
+    input_images = sorted([p for p in INPUT_DIR.iterdir() if p.suffix.lower() in (".jpg", ".jpeg", ".png")])
+    if not input_images:
+        warn("No image found in input/. Please place one hand or finger image and rerun.")
+        return
+    img_path = input_images[-1]
+    info(f"📸 Using image: {img_path.name}")
 
-    img_path = get_latest_input_image(INPUT_DIR)
-    if not img_path:
-        log_error("❌ No image found in input folder.")
+    clean_output(OUTPUT_DIR)
+
+    # --- Step 2: Nail ROI Detection ---
+    info("🔍 Detecting nail regions...")
+    result = detect_nail_roi(str(img_path), debug=False)
+
+    if result is None:
+        error("❌ Internal detector failure. Check nail_detector.py.")
         return
 
-    img = cv2.imread(str(img_path))
-    if img is None:
-        log_error("❌ Failed to read the image file.")
+    rois, annotated, status = result
+    info(status)
+
+    if rois is None or len(rois) == 0:
+        error("❌ No valid ROI detected. Please check lighting, clarity, or remove nail polish.")
+        cv2.imwrite(str(OUTPUT_DIR / "failed_result.jpg"), annotated)
         return
 
-    # Progress bar for demo
-    steps = ["Validate Image", "Extract ROI", "Calibrate Colors", "Extract Features", "Visualize Results"]
-    for step in tqdm(steps, desc="Pipeline Progress", ncols=80):
+    cv2.imwrite(str(OUTPUT_DIR / "annotated_result.jpg"), annotated)
+    success(f"✅ ROI detection completed. {len(rois)} region(s) found.")
 
-        if step == "Validate Image":
-            passed, metrics = validate_image(img)
-            if not passed:
-                log_error(f"Image failed validation: {metrics}")
-                return
-            log_success(f"✅ Validation passed: {metrics}")
+    # --- Step 3: Fairness-Calibrated Preprocessing ---
+    info("🎨 Applying CLAHE + Gray-World Calibration...")
+    calibrated_rois = [calibrate_image(r) for r in rois]
 
-        elif step == "Extract ROI":
-            result = extract_nail_roi(img)
-            if result is None:
-                log_error("❌ ROI extraction failed.")
-                return
+    for i, r in enumerate(calibrated_rois):
+        cv2.imwrite(str(OUTPUT_DIR / f"calibrated_roi_{i+1}.jpg"), r)
+    success("✅ Calibration done and saved.")
 
-            roi, outlined_img = result
-            roi_path = OUTPUT_DIR / f"{img_path.stem}_roi.jpg"
-            outlined_path = OUTPUT_DIR / f"{img_path.stem}_outlined.jpg"
-            cv2.imwrite(str(roi_path), roi)
-            cv2.imwrite(str(outlined_path), outlined_img)
-            log_success(f"✂️ ROI extracted and outlined: {outlined_path.name}")
+    # --- Step 4: Tone Fairness & Skin Normalization ---
+    info("🌈 Performing skin-tone fairness analysis...")
+    fairness_report = analyze_tone_fairness(calibrated_rois)
+    save_json(fairness_report, "fairness_report.json")
+    success("✅ Fairness normalization and audit complete.")
 
-        elif step == "Calibrate Colors":
-            calibrated = calibrate_image(roi)
-            calibrated_path = OUTPUT_DIR / f"{img_path.stem}_calibrated.jpg"
-            cv2.imwrite(str(calibrated_path), calibrated)
+    # --- Step 5: Feature Extraction (Spectral + LAB + HSV + FFT) ---
+    info("📊 Extracting interpretable spectral features...")
+    fused_features = fuse_nail_features(calibrated_rois, fusion_mode="median")
+    save_json(fused_features, "features.json")
+    success("✅ Feature extraction complete and saved to features.json")
 
-        elif step == "Extract Features":
-            features = extract_features(calibrated)
-            feature_path = OUTPUT_DIR / f"{img_path.stem}_features.json"
-            with open(feature_path, "w") as f:
-                json.dump(features, f, indent=4)
+    # --- Step 6: Summary Output ---
+    info("\n============================")
+    info("🏁 PIPELINE SUMMARY")
+    info("============================")
+    success(f"Input Image: {img_path.name}")
+    success(f"Detected ROIs: {len(rois)}")
+    success(f"Output Folder: {OUTPUT_DIR}")
+    info("Files Generated:")
+    print("  - annotated_result.jpg")
+    print("  - calibrated_roi_X.jpg")
+    print("  - fairness_report.json")
+    print("  - features.json")
 
-        elif step == "Visualize Results":
-            vis_path = OUTPUT_DIR / f"{img_path.stem}_comparison.jpg"
-            visualize_stages(img, roi, calibrated, vis_path)
-            log_success(f"🖼️ Visualization saved: {vis_path.name}")
-
-    log_success("🎉 Preprocessing & Feature Extraction Completed Successfully!")
+    info("🎯 Robust preprocessing completed successfully!")
+    info("Use 'features.json' + 'fairness_report.json' for training or audit phase.")
 
 if __name__ == "__main__":
     main()
