@@ -58,12 +58,17 @@ def main():
             log_success(f"✅ Validation passed: {metrics}")
 
         elif step == "Extract ROI":
-            roi = extract_nail_roi(img)
-            if roi is None:
+            result = extract_nail_roi(img)
+            if result is None:
                 log_error("❌ ROI extraction failed.")
                 return
+
+            roi, outlined_img = result
             roi_path = OUTPUT_DIR / f"{img_path.stem}_roi.jpg"
+            outlined_path = OUTPUT_DIR / f"{img_path.stem}_outlined.jpg"
             cv2.imwrite(str(roi_path), roi)
+            cv2.imwrite(str(outlined_path), outlined_img)
+            log_success(f"✂️ ROI extracted and outlined: {outlined_path.name}")
 
         elif step == "Calibrate Colors":
             calibrated = calibrate_image(roi)
