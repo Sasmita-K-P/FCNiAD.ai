@@ -1,0 +1,54 @@
+# # ====== Core Web Framework ======
+# fastapi==0.115.0
+# uvicorn[standard]==0.30.0
+
+# # ====== Image Processing ======
+# opencv-python==4.10.0.84
+# numpy==1.26.4
+# scipy==1.13.1
+# Pillow==10.4.0
+
+# # ====== Machine Learning / AI ======
+# scikit-learn==1.5.2
+# joblib==1.4.2
+# tensorflow==2.17.0          # optional, if you want to deploy a TFLite model
+# onnxruntime==1.19.0          # optional, if using ONNX model inference
+
+# # ====== Data Handling ======
+# pandas==2.2.3
+
+# # ====== Database & ORM ======
+# sqlalchemy==2.0.35
+# sqlite-utils==3.36
+
+# # ====== API Helpers ======
+# python-multipart==0.0.9      # file uploads
+# pydantic==2.8.2              # data validation
+# email-validator==2.1.1
+# python-dotenv==1.0.1         # load .env configs
+# requests==2.32.3
+
+# # ====== Explainability & Visualization ======
+# shap==0.46.0
+# matplotlib==3.9.2
+
+# # ====== Security & Encryption ======
+# cryptography==43.0.1
+
+# # ====== Developer Utilities ======
+# tqdm==4.66.5
+# loguru==0.7.2
+# pytest==8.3.3
+
+# # ====== Optional Edge Inference (for later mobile deployment) ======
+# tensorflow-lite==2.17.0; sys_platform != 'darwin'  # skip on mac if issues
+
+opencv-python
+numpy
+scipy
+termcolor
+tqdm
+matplotlib
+opencv-python
+mediapipe
+numpy
