@@ -55,10 +55,25 @@ def detect_nail_roi(image_path, debug=False):
                 x = int(hand_landmarks.landmark[fid].x * w)
                 y = int(hand_landmarks.landmark[fid].y * h)
                 cv2.circle(annotated, (x, y), 4, (0, 255, 0), -1)
-                nail_h, nail_w = 80, 100
-                y1, y2 = max(0, y - nail_h), min(h, y)
-                x1, x2 = max(0, x - nail_w // 2), min(w, x + nail_w // 2)
-                roi = img[y1:y2, x1:x2]
+                # Initial small fingertip ROI
+                small_h, small_w = 40, 50
+                y1, y2 = max(0, y - small_h), min(h, y)
+                x1, x2 = max(0, x - small_w // 2), min(w, x + small_w // 2)
+                small_roi = img[y1:y2, x1:x2]
+
+                if small_roi.size == 0:
+                    continue
+                if is_painted_nail(small_roi):
+                    return None, annotated, "💅 Painted nail detected. Remove nail polish."
+
+                # ➤ Expand to full nail bed
+                nx1, ny1, nx2, ny2 = expand_to_nail_bed(x1, y1, x2-x1, y2-y1, w, h)
+                roi = img[ny1:ny2, nx1:nx2]
+
+                if is_skin_color_region(roi):
+                    rois.append(roi)
+                cv2.rectangle(annotated, (nx1, ny1), (nx2, ny2), (0, 255, 0), 2)
+
                 if roi.size == 0: continue
                 if is_painted_nail(roi):
                     return None, annotated, "💅 Painted nail detected. Please remove nail polish."
@@ -83,3 +98,26 @@ def is_painted_nail(roi):
     hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
     mean_sat, mean_val = np.mean(hsv[:, :, 1]), np.mean(hsv[:, :, 2])
     return mean_sat > 85 and mean_val > 130
+
+def expand_to_nail_bed(x, y, w, h, img_w, img_h):
+    """
+    Expands fingertip ROI to include entire nail bed:
+    - distal edge
+    - nail body
+    - lunula
+    - lateral folds
+    """
+    # Nail bed typically ≈ 2.2 × nail height
+    new_h = int(h * 2.2)
+    new_w = int(w * 1.4)
+
+    cx = x + w // 2
+
+    nx1 = max(0, cx - new_w // 2)
+    nx2 = min(img_w, cx + new_w // 2)
+
+    # Expand UPWARDS toward proximal fold
+    ny2 = y + h    # fingertip bottom
+    ny1 = max(0, ny2 - new_h)
+
+    return nx1, ny1, nx2, ny2
