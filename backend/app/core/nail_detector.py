@@ -55,10 +55,30 @@ def detect_nail_roi(image_path, debug=False):
                 x = int(hand_landmarks.landmark[fid].x * w)
                 y = int(hand_landmarks.landmark[fid].y * h)
                 cv2.circle(annotated, (x, y), 4, (0, 255, 0), -1)
-                # Initial small fingertip ROI
-                small_h, small_w = 40, 50
-                y1, y2 = max(0, y - small_h), min(h, y)
-                x1, x2 = max(0, x - small_w // 2), min(w, x + small_w // 2)
+                
+                # fingertip reference point
+                fp = (x, y)
+
+                # small reference ROI to check polish
+                ref_h, ref_w = 40, 40
+                ry1, ry2 = max(0, y - ref_h), min(h, y)
+                rx1, rx2 = max(0, x - ref_w // 2), min(w, x + ref_w // 2)
+                ref_roi = img[ry1:ry2, rx1:rx2]
+
+                if ref_roi.size == 0:
+                    continue
+                if is_painted_nail(ref_roi):
+                    return None, annotated, "💅 Painted nail detected. Remove nail polish."
+
+                # ---- Extract full nail bed ----
+                roi, box = extract_full_nail_bed_region(img, fp, ref_w, ref_h)
+                x1, y1, x2, y2 = box
+
+                if roi.size > 0 and is_skin_color_region(roi):
+                    rois.append(roi)
+                    cv2.rectangle(annotated, (x1, y1), (x2, y2), (0, 255, 0), 3)
+
+
                 small_roi = img[y1:y2, x1:x2]
 
                 if small_roi.size == 0:
@@ -121,3 +141,25 @@ def expand_to_nail_bed(x, y, w, h, img_w, img_h):
     ny1 = max(0, ny2 - new_h)
 
     return nx1, ny1, nx2, ny2
+
+def extract_full_nail_bed_region(img, fingertip_point, w, h):
+    """
+    Produces a realistic nail-bed region by expanding anatomically:
+      - 2.0X upward (proximal fold)
+      - 0.7X sideways (lateral folds)
+      - 1.0X downward (free edge)
+    """
+    cx, cy = fingertip_point
+    ih, iw = img.shape[:2]
+
+    nail_h = int(h * 2.0)       # proximal expansion
+    nail_down = int(h * 1.0)    # free edge
+    nail_side = int(w * 0.7)    # lateral folds
+
+    x1 = max(0, cx - nail_side)
+    x2 = min(iw, cx + nail_side)
+    y1 = max(0, cy - nail_h)
+    y2 = min(ih, cy + nail_down)
+
+    return img[y1:y2, x1:x2], (x1, y1, x2, y2)
+

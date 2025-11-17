@@ -1,6 +1,7 @@
 import cv2
 import numpy as np
 from core.nail_detector import expand_to_nail_bed
+from core.nail_detector import extract_full_nail_bed_region
 
 def extract_nail_roi(img):
     """Detect and extract the nail region using skin masking + contour filtering."""
@@ -35,7 +36,8 @@ def extract_nail_roi(img):
         if y < top_section and w > 30 and h > 20:
             # Expand contour box to nail-bed proportions
             nx1, ny1, nx2, ny2 = expand_to_nail_bed(x, y, w, h, img_w, img_h)
-            roi = img[ny1:ny2, nx1:nx2]
+            roi, _ = extract_full_nail_bed_region(img, (x + w//2, y + h//2), w, h)
+
 
             best_box = (x, y, w, h)
             break
