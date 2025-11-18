@@ -2,173 +2,87 @@
 import cv2
 import numpy as np
 import mediapipe as mp
+
+from core.segmentation_unet import load_unet, predict_mask_unet
+from core.geometry import get_orientation_from_mask, rotate_image_and_mask, rectify_perspective_by_mask, crop_to_mask_bbox
+from core.enhance import normalize_color, enhance_vascular_contrast
+
 mp_hands = mp.solutions.hands
 
-# -----------------------------
-# 1. Anatomical Expansion Logic
-# -----------------------------
-def expand_to_nail_bed(image, fingertip_point, base_w=60, base_h=80):
-    """
-    Expands ROI to approximate full nail bed:
-    - upward: proximal fold + lunula
-    - sideways: lateral folds
-    - downward: free edge
-    """
-    ih, iw = image.shape[:2]
-    cx, cy = fingertip_point
+# Load UNet if exists
+import os
+MODEL_PATH = "app/models/unet_best.h5"
+USE_UNET = os.path.exists(MODEL_PATH)
+UNET_MODEL = load_unet(MODEL_PATH) if USE_UNET else None
 
-    w = int(base_w * 2.2)
-    h_up = int(base_h * 2.5)
-    h_down = int(base_h * 1.0)
+def hsv_fallback_mask(roi):
+    hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+    s = hsv[:,:,1]
+    v = hsv[:,:,2]
+    mask = ((s > 25) & (v > 40) & (s < 200)).astype(np.uint8) * 255
+    return mask
+
+def expand_to_nail_bed(image, point):
+    cx, cy = point
+    ih, iw = image.shape[:2]
+
+    w = 110
+    up = 160
+    down = 100
 
     x1 = max(0, cx - w)
     x2 = min(iw, cx + w)
-    y1 = max(0, cy - h_up)
-    y2 = min(ih, cy + h_down)
+    y1 = max(0, cy - up)
+    y2 = min(ih, cy + down)
+    return image[y1:y2, x1:x2], (x1,y1,x2,y2)
 
-    return image[y1:y2, x1:x2], (x1, y1, x2, y2)
-
-
-# -----------------------------------
-# 2. Classical CV Nail-Bed Mask (NO ML)
-# -----------------------------------
-def generate_nail_mask(roi):
-    """
-    Classical nail-bed segmentation:
-    - LAB threshold for pale-pink region
-    - Morph open + close
-    - Convex hull = clean nail bed
-    """
-    lab = cv2.cvtColor(roi, cv2.COLOR_BGR2LAB)
-    L, A, B = cv2.split(lab)
-
-    # Nail bed LAB range (pale pink / beige)
-    mask = (L > 120) & (L < 245) & (A > 120) & (A < 158)
-    mask = mask.astype(np.uint8) * 255
-
-    # Clean
-    kernel = np.ones((7,7), np.uint8)
-    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
-    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
-
-    # Convex hull
-    contours,_ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    if not contours:
-        return mask
-
-    c = max(contours, key=cv2.contourArea)
-    hull = cv2.convexHull(c)
-    hull_mask = np.zeros_like(mask)
-    cv2.drawContours(hull_mask, [hull], -1, 255, -1)
-    return hull_mask
-
-
-# ---------------------------------------
-# 3. Auto-Rotation (PCA on mask)
-# ---------------------------------------
-def rotate_to_vertical(img, mask):
-    ys, xs = np.where(mask > 0)
-    if xs.size == 0:
-        return img, mask
-
-    coords = np.column_stack((xs, ys))
-    mean = coords.mean(axis=0)
-    cov = np.cov(coords - mean, rowvar=False)
-    _, eigenvecs = np.linalg.eig(cov)
-    main = eigenvecs[:,0]
-
-    angle = np.degrees(np.arctan2(main[1], main[0]))
-    rot = 90 - angle
-
-    h, w = img.shape[:2]
-    M = cv2.getRotationMatrix2D((w/2, h/2), rot, 1.0)
-
-    img_r = cv2.warpAffine(img, M, (w,h), borderValue=(255,255,255))
-    mask_r = cv2.warpAffine(mask, M, (w,h))
-    return img_r, mask_r
-
-
-# ---------------------------------------
-# 4. Perspective correction
-# ---------------------------------------
-def rectify_perspective(img, mask):
-    contours,_ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    if not contours:
-        return img
-
-    c = max(contours, key=cv2.contourArea)
-    rect = cv2.minAreaRect(c)
-    box = cv2.boxPoints(rect).astype(np.float32)
-
-    w = int(rect[1][0])
-    h = int(rect[1][1])
-
-    dst = np.array([[0,h-1],[0,0],[w-1,0],[w-1,h-1]],dtype=np.float32)
-    M = cv2.getPerspectiveTransform(box, dst)
-
-    warped = cv2.warpPerspective(img, M, (w,h))
-    return warped
-
-
-# ---------------------------------------
-# 5. Enhancement
-# ---------------------------------------
-def enhance_nail(img):
-    den = cv2.bilateralFilter(img, 9, 75, 75)
-    lab = cv2.cvtColor(den, cv2.COLOR_BGR2LAB)
-
-    l,a,b = cv2.split(lab)
-    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8,8))
-    l2 = clahe.apply(l)
-    final = cv2.cvtColor(cv2.merge([l2,a,b]), cv2.COLOR_LAB2BGR)
-    return final
-
-
-# ---------------------------------------
-# 6. MAIN EXTRACTOR
-# ---------------------------------------
 def detect_nail_roi(image_path, debug=False):
     img = cv2.imread(image_path)
     if img is None:
-        return None, None, "Invalid image"
+        return None, None, "Invalid image."
 
-    h,w = img.shape[:2]
+    h, w = img.shape[:2]
     annotated = img.copy()
     rois = []
 
-    with mp_hands.Hands(static_image_mode=True,max_num_hands=1) as hands:
-        res = hands.process(cv2.cvtColor(img,cv2.COLOR_BGR2RGB))
-
+    with mp_hands.Hands(static_image_mode=True, max_num_hands=1) as hands:
+        res = hands.process(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
         if not res.multi_hand_landmarks:
-            return None, img, "No hand detected"
+            return None, annotated, "No hand detected."
+
+        fingertip_ids = [4, 8, 12, 16, 20]
 
         for hand in res.multi_hand_landmarks:
-            # Fingertip IDs
-            tips = [4,8,12,16,20]
-            for fid in tips:
+            for fid in fingertip_ids:
                 x = int(hand.landmark[fid].x * w)
                 y = int(hand.landmark[fid].y * h)
 
-                # 1) Anatomical expansion
                 big_roi, box = expand_to_nail_bed(img, (x,y))
                 bx1,by1,bx2,by2 = box
                 cv2.rectangle(annotated,(bx1,by1),(bx2,by2),(0,255,0),2)
 
-                # 2) Mask
-                mask = generate_nail_mask(big_roi)
+                # --- SHAPE-AWARE MASK ---
+                if USE_UNET:
+                    mask = predict_mask_unet(UNET_MODEL, big_roi)
+                else:
+                    mask = hsv_fallback_mask(big_roi)
 
-                # 3) Rotate
-                rot_img, rot_mask = rotate_to_vertical(big_roi, mask)
+                # rotate
+                angle = get_orientation_from_mask(mask)
+                rot_img, rot_mask = rotate_image_and_mask(big_roi, mask, angle)
 
-                # 4) Perspective fix
-                rectified = rectify_perspective(rot_img, rot_mask)
+                # rectify
+                rect_img, rect_mask = rectify_perspective_by_mask(rot_img, rot_mask)
 
-                # 5) Enhance
-                enhanced = enhance_nail(rectified)
+                # crop
+                crop, _ = crop_to_mask_bbox(rect_img, rect_mask)
+                if crop is None:
+                    continue
 
-                rois.append(enhanced)
+                # enhance
+                crop = normalize_color(crop)
+                crop = enhance_vascular_contrast(crop)
 
-    if len(rois)==0:
-        return None, annotated, "No ROI extracted"
+                rois.append(crop)
 
-    return rois, annotated, "Full nail-bed extracted successfully"
+    return rois, annotated, "Shape-aware ROI extraction completed."
